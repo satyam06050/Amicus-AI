@@ -1,0 +1,26 @@
+# Core LLM & agent framework
+langchain-groq==1.1.2
+langchain-core==1.2.29
+langgraph==1.1.6
+
+# Vector store & embeddings
+chromadb==1.5.7
+sentence-transformers==5.4.1
+
+# ML backend (required by sentence-transformers / transformers)
+torch
+torchvision
+torchaudio
+
+# Web search tool
+duckduckgo-search==8.1.1
+
+# Evaluation
+ragas==0.4.3
+datasets==4.8.4
+
+# UI
+streamlit==1.56.0
+
+# Environment / secrets
+python-dotenv==1.2.2
