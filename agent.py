@@ -40,11 +40,20 @@ MAX_EVAL_RETRIES       = 2
 def create_memory_node(llm, embedder, collection):
     """Create and return the memory node function."""
     def memory_node(state: CapstoneState) -> dict:
-        msgs = state.get("messages", [])
-        msgs = msgs + [{"role": "user", "content": state["question"]}]
+        msgs     = state.get("messages", [])
+        question = state["question"]
+        msgs     = msgs + [{"role": "user", "content": question}]
         if len(msgs) > 6:
             msgs = msgs[-6:]
-        return {"messages": msgs}
+        # Extract and persist user name if introduced
+        updates: dict = {"messages": msgs}
+        lower = question.lower()
+        if "my name is" in lower:
+            import re
+            match = re.search(r"my name is ([\w]+)", lower)
+            if match:
+                updates["document_name"] = match.group(1).capitalize()
+        return updates
     return memory_node
 
 def create_router_node(llm):
