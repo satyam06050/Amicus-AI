@@ -1,437 +1,410 @@
-import streamlit as st
-import uuid
-import logging
-from dotenv import load_dotenv
-from documents import DOCUMENTS
-from agent import load_agent
-from utils import sanitize_input
-
-load_dotenv()
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Document Intelligence Assistant",
-    page_icon="⚖️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ─────────────────────────────────────────────────────────
-# CUSTOM CSS
-# ─────────────────────────────────────────────────────────
-st.markdown("""
+def get_custom_css() -> str:
+    return """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Source+Sans+3:wght@300;400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&display=swap');
 
-/* ── Root ── */
-html, body, [class*="css"] {
-    font-family: 'Source Sans 3', sans-serif;
+/* ── RESET & BASE ─────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #F2EFE6 !important;
+    font-family: 'Space Mono', monospace !important;
 }
 
-/* ── Background ── */
-.stApp {
-    background: #0f1117;
-    color: #e8e2d5;
+[data-testid="stApp"] {
+    background-color: #F2EFE6 !important;
 }
 
-/* ── Sidebar ── */
+/* Kill all Streamlit default polish */
+[data-testid="stHeader"] { display: none !important; }
+[data-testid="stDecoration"] { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+section[data-testid="stSidebar"] > div { padding-top: 1.5rem !important; }
+
+/* ── SIDEBAR ──────────────────────────────────────── */
 [data-testid="stSidebar"] {
-    background: #161a22 !important;
-    border-right: 1px solid #2a2f3d;
+    background-color: #1A1A1A !important;
+    border-right: 4px solid #000 !important;
 }
 
 [data-testid="stSidebar"] * {
-    color: #c5bfb0 !important;
+    color: #F2EFE6 !important;
+    font-family: 'Space Mono', monospace !important;
 }
 
-/* ── Title ── */
-.main-title {
-    font-family: 'Playfair Display', serif;
-    font-size: 2.4rem;
-    font-weight: 700;
-    color: #e8d5a3;
-    letter-spacing: -0.5px;
-    margin-bottom: 0.1rem;
+[data-testid="stSidebar"] .stMarkdown h3 {
+    font-family: 'Bebas Neue', sans-serif !important;
+    font-size: 1.8rem !important;
+    letter-spacing: 0.12em;
+    color: #F2EFE6 !important;
+    margin-bottom: 0.2rem !important;
+    border-bottom: 3px solid #F2EFE6;
+    padding-bottom: 0.4rem;
 }
 
-.sub-caption {
-    font-size: 0.92rem;
-    color: #7a7565;
-    font-weight: 300;
-    letter-spacing: 0.5px;
-    margin-bottom: 1.5rem;
-    border-bottom: 1px solid #2a2f3d;
-    padding-bottom: 1rem;
-}
-
-/* ── Chat messages ── */
-[data-testid="stChatMessage"] {
-    background: #161a22 !important;
-    border: 1px solid #2a2f3d !important;
-    border-radius: 10px !important;
-    margin-bottom: 0.6rem;
-    padding: 0.8rem 1rem !important;
-}
-
-[data-testid="stChatMessage"][data-testid*="user"] {
-    background: #1a1f2e !important;
-}
-
-/* ── Chat input ── */
-[data-testid="stChatInput"] {
-    background: #161a22 !important;
-    border: 1px solid #3a3f50 !important;
-    border-radius: 10px !important;
-    color: #e8e2d5 !important;
-}
-
-[data-testid="stChatInput"]:focus {
-    border-color: #c9a84c !important;
-    box-shadow: 0 0 0 2px rgba(201,168,76,0.15) !important;
-}
-
-/* ── Buttons ── */
-.stButton > button {
-    background: transparent !important;
-    border: 1px solid #3a3f50 !important;
-    color: #c5bfb0 !important;
-    border-radius: 6px !important;
-    font-family: 'Source Sans 3', sans-serif !important;
-    font-size: 0.85rem !important;
-    padding: 0.4rem 1rem !important;
-    transition: all 0.2s ease !important;
-}
-
-.stButton > button:hover {
-    border-color: #c9a84c !important;
-    color: #e8d5a3 !important;
-    background: rgba(201,168,76,0.08) !important;
-}
-
-/* ── Metric cards ── */
-.metric-card {
-    background: #161a22;
-    border: 1px solid #2a2f3d;
-    border-radius: 8px;
-    padding: 0.8rem 1rem;
-    text-align: center;
-}
-.metric-label {
-    font-size: 0.72rem;
-    color: #7a7565;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    margin-bottom: 0.3rem;
-}
-.metric-value {
-    font-family: 'Playfair Display', serif;
-    font-size: 1.5rem;
-    color: #e8d5a3;
-}
-
-/* ── Topic pill ── */
-.topic-pill {
-    display: inline-block;
-    background: #1f2535;
-    border: 1px solid #2a2f3d;
-    border-radius: 20px;
-    padding: 2px 10px;
-    font-size: 0.75rem;
-    color: #9a9080;
-    margin: 2px;
-}
-
-/* ── Source tag ── */
-.source-tag {
-    display: inline-block;
-    background: rgba(201,168,76,0.1);
-    border: 1px solid rgba(201,168,76,0.25);
-    border-radius: 4px;
-    padding: 1px 8px;
-    font-size: 0.72rem;
-    color: #c9a84c;
-    margin: 2px;
-}
-
-/* ── Route badge ── */
-.route-badge {
-    display: inline-block;
-    background: rgba(100, 180, 220, 0.2);
-    border: 1px solid rgba(100, 180, 220, 0.4);
-    border-radius: 12px;
-    padding: 2px 8px;
-    font-size: 0.7rem;
-    color: #64b4dc;
-    margin: 2px;
-    font-weight: 500;
-}
-
-/* ── Faithfulness bar ── */
-.faith-bar-bg {
-    background: #2a2f3d;
-    border-radius: 4px;
-    height: 4px;
-    margin-top: 4px;
-}
-.faith-bar-fill {
-    height: 4px;
-    border-radius: 4px;
-    transition: width 0.5s ease;
-}
-
-/* ── Divider ── */
-hr {
-    border-color: #2a2f3d !important;
+[data-testid="stSidebar"] hr {
+    border: none !important;
+    border-top: 2px solid #333 !important;
     margin: 1rem 0 !important;
 }
 
-/* ── Spinner ── */
-.stSpinner > div {
-    border-top-color: #c9a84c !important;
+/* ── METRIC CARDS ─────────────────────────────────── */
+.metric-card {
+    background: #000;
+    border: 3px solid #F2EFE6;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.25rem;
 }
 
-/* ── Status / success ── */
-.stSuccess {
-    background: rgba(40, 80, 50, 0.3) !important;
-    border-color: #2a5235 !important;
-    color: #7ec89a !important;
+.metric-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #888 !important;
+    margin-bottom: 0.2rem;
 }
 
-/* ── Warning ── */
-.stWarning {
-    background: rgba(80, 60, 20, 0.3) !important;
-    border-color: #5a4010 !important;
-    color: #c9a84c !important;
+.metric-value {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2rem;
+    color: #F2EFE6 !important;
+    line-height: 1;
 }
 
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: #0f1117; }
-::-webkit-scrollbar-thumb { background: #2a2f3d; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3a3f50; }
+/* ── SIDEBAR BUTTONS ──────────────────────────────── */
+[data-testid="stSidebar"] .stButton > button {
+    background: transparent !important;
+    border: 2px solid #444 !important;
+    color: #F2EFE6 !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.72rem !important;
+    text-align: left !important;
+    border-radius: 0 !important;
+    padding: 0.5rem 0.75rem !important;
+    transition: all 0.08s ease !important;
+    letter-spacing: 0.02em;
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: #F2EFE6 !important;
+    color: #000 !important;
+    border-color: #F2EFE6 !important;
+    transform: translate(-2px, -2px) !important;
+    box-shadow: 3px 3px 0 #888 !important;
+}
+
+/* New Conversation button — accent */
+[data-testid="stSidebar"] .stButton:last-of-type > button {
+    border-color: #E8C547 !important;
+    color: #E8C547 !important;
+    font-weight: 700 !important;
+}
+
+[data-testid="stSidebar"] .stButton:last-of-type > button:hover {
+    background: #E8C547 !important;
+    color: #000 !important;
+}
+
+/* ── PILLS / BADGES ───────────────────────────────── */
+.topic-pill {
+    display: inline-block;
+    background: transparent;
+    border: 2px solid #555;
+    color: #AAA !important;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    margin: 2px 2px;
+    border-radius: 0;
+}
+
+.route-badge {
+    display: inline-block;
+    background: #E8C547;
+    color: #000 !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 0;
+}
+
+.source-tag {
+    display: inline-block;
+    background: #1A1A1A;
+    color: #999 !important;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.05em;
+    padding: 1px 8px;
+    margin: 2px 2px;
+    border: 1px solid #333;
+    border-radius: 0;
+}
+
+/* ── FAITHFULNESS BAR ─────────────────────────────── */
+.faith-bar-bg {
+    height: 6px;
+    background: #333;
+    border-radius: 0;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.faith-bar-fill {
+    height: 6px;
+    border-radius: 0;
+    transition: width 0.3s ease;
+}
+
+/* ── MAIN AREA ────────────────────────────────────── */
+.main-title {
+    font-family: 'Bebas Neue', sans-serif !important;
+    font-size: clamp(2.8rem, 6vw, 5rem);
+    letter-spacing: 0.08em;
+    color: #000;
+    line-height: 0.95;
+    margin-bottom: 0.1rem;
+    border-left: 10px solid #000;
+    padding-left: 1rem;
+    text-transform: uppercase;
+}
+
+.sub-caption {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: #555;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 1.5rem;
+    margin-left: calc(1rem + 10px);
+    border-bottom: 2px solid #000;
+    padding-bottom: 0.75rem;
+}
+
+/* ── CHAT MESSAGES ────────────────────────────────── */
+[data-testid="stChatMessage"] {
+    background: transparent !important;
+    border: none !important;
+    padding: 0.75rem 0 !important;
+    border-bottom: 1px solid #CCC !important;
+    border-radius: 0 !important;
+}
+
+/* User message bubble */
+[data-testid="stChatMessage"][data-testid*="user"],
+[aria-label*="user"] [data-testid="stMarkdownContainer"] {
+    font-family: 'Space Mono', monospace !important;
+}
+
+/* Message content */
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] li,
+[data-testid="stChatMessage"] span {
+    font-family: 'Space Mono', monospace !important;
+    font-size: 0.9rem !important;
+    line-height: 1.7 !important;
+    color: #111 !important;
+}
+
+/* ── CHAT INPUT ───────────────────────────────────── */
+[data-testid="stChatInputContainer"] {
+    border-top: 4px solid #000 !important;
+    background: #F2EFE6 !important;
+    padding: 1rem 0 !important;
+}
+
+[data-testid="stChatInputContainer"] textarea {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.9rem !important;
+    background: #fff !important;
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    color: #000 !important;
+    padding: 0.75rem !important;
+    box-shadow: 4px 4px 0 #000 !important;
+}
+
+[data-testid="stChatInputContainer"] textarea:focus {
+    box-shadow: 6px 6px 0 #E8C547 !important;
+    outline: none !important;
+}
+
+[data-testid="stChatInputContainer"] button {
+    background: #000 !important;
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    color: #E8C547 !important;
+    font-family: 'Bebas Neue', sans-serif !important;
+    font-size: 1.2rem !important;
+    letter-spacing: 0.1em;
+}
+
+/* ── EXPANDERS ────────────────────────────────────── */
+[data-testid="stExpander"] {
+    border: 2px solid #000 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    margin-top: 0.5rem !important;
+}
+
+[data-testid="stExpander"] summary {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.75rem !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    font-weight: 600 !important;
+    color: #000 !important;
+    background: #F2EFE6 !important;
+    padding: 0.5rem 1rem !important;
+    border-bottom: 2px solid #000 !important;
+}
+
+[data-testid="stExpander"] > div > div {
+    padding: 0.75rem 1rem !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+}
+
+/* ── SPINNER / STATUS ─────────────────────────────── */
+[data-testid="stSpinner"] {
+    border: 3px solid #000 !important;
+    padding: 1rem !important;
+    background: #E8C547 !important;
+    border-radius: 0 !important;
+}
+
+[data-testid="stSpinner"] p {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+    color: #000 !important;
+}
+
+/* ── ALERTS ───────────────────────────────────────── */
+[data-testid="stInfo"] {
+    background: #fff !important;
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    border-left: 8px solid #000 !important;
+}
+
+[data-testid="stSuccess"] {
+    background: #fff !important;
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    border-left: 8px solid #4CAF50 !important;
+}
+
+[data-testid="stError"] {
+    background: #fff !important;
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    border-left: 8px solid #E53935 !important;
+}
+
+[data-testid="stWarning"] {
+    background: #fff !important;
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    border-left: 8px solid #E8C547 !important;
+}
+
+[data-testid="stInfo"] p,
+[data-testid="stSuccess"] p,
+[data-testid="stError"] p,
+[data-testid="stWarning"] p {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+    color: #000 !important;
+}
+
+/* ── FILE UPLOADER ────────────────────────────────── */
+[data-testid="stFileUploader"] {
+    border: 3px dashed #555 !important;
+    border-radius: 0 !important;
+    background: #111 !important;
+    padding: 0.5rem !important;
+}
+
+[data-testid="stFileUploader"] label,
+[data-testid="stFileUploader"] p,
+[data-testid="stFileUploader"] span {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.72rem !important;
+    color: #999 !important;
+}
+
+[data-testid="stFileUploader"] button {
+    background: #E8C547 !important;
+    color: #000 !important;
+    border: 2px solid #E8C547 !important;
+    border-radius: 0 !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-weight: 700 !important;
+    font-size: 0.72rem !important;
+}
+
+/* ── DIVIDER ──────────────────────────────────────── */
+hr {
+    border: none !important;
+    border-top: 2px solid #000 !important;
+    margin: 1rem 0 !important;
+}
+
+/* ── SCROLLBAR ────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; background: #F2EFE6; }
+::-webkit-scrollbar-thumb { background: #000; border: 2px solid #F2EFE6; }
+
+/* ── EMPTY STATE ──────────────────────────────────── */
+.empty-state-box {
+    border: 4px solid #000;
+    padding: 3rem 2rem;
+    text-align: center;
+    background: #fff;
+    box-shadow: 8px 8px 0 #000;
+    margin: 2rem 0;
+}
+
+.empty-state-icon {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 5rem;
+    color: #000;
+    line-height: 1;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+.empty-state-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2rem;
+    letter-spacing: 0.1em;
+    color: #000;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+}
+
+.empty-state-sub {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: #555;
+    letter-spacing: 0.05em;
+}
+
+/* ── CODE BLOCKS ──────────────────────────────────── */
+code, pre {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+    background: #1A1A1A !important;
+    color: #E8C547 !important;
+    border-radius: 0 !important;
+    border: 2px solid #000 !important;
+}
 </style>
-""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────
-# CONSTANTS
-# ─────────────────────────────────────────────────────────
-DOMAIN_NAME        = "Document Intelligence Assistant"
-DOMAIN_DESCRIPTION = "Ask questions about legal contracts, clauses, and documents — answers grounded in the knowledge base."
-KB_TOPICS          = [d["topic"] for d in DOCUMENTS]
-
-# ─────────────────────────────────────────────────────────
-# LOAD AGENT (cached)
-# ─────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner=False)
-def load_agent_cached():
-    return load_agent()
-
-# ─────────────────────────────────────────────────────────
-# SESSION STATE INIT
-# ─────────────────────────────────────────────────────────
-if "messages"      not in st.session_state: st.session_state.messages      = []
-if "thread_id"     not in st.session_state: st.session_state.thread_id     = str(uuid.uuid4())[:8]
-if "total_queries" not in st.session_state: st.session_state.total_queries = 0
-if "faith_scores"  not in st.session_state: st.session_state.faith_scores  = []  # FIX: was "avg_faithfulness"
-
-# ─────────────────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### ⚖️ Document Intelligence")
-    st.markdown(
-        f"<div style='font-size:0.82rem; color:#7a7565; margin-bottom:1rem;'>{DOMAIN_DESCRIPTION}</div>",
-        unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # Session metrics
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Queries</div>
-            <div class='metric-value'>{st.session_state.total_queries}</div>
-        </div>""", unsafe_allow_html=True)
-    with col2:
-        avg_f = (sum(st.session_state.faith_scores) / len(st.session_state.faith_scores)
-                 if st.session_state.faith_scores else 0.0)
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Avg Faith</div>
-            <div class='metric-value'>{avg_f:.2f}</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown(
-        f"<div style='font-size:0.72rem; color:#4a4535; margin-top:0.5rem;'>Session: {st.session_state.thread_id}</div>",
-        unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # Topics
-    st.markdown("<div style='font-size:0.75rem; color:#7a7565; letter-spacing:1px; text-transform:uppercase; margin-bottom:0.5rem;'>Topics Covered</div>", unsafe_allow_html=True)
-    for topic in KB_TOPICS:
-        st.markdown(f"<span class='topic-pill'>{topic}</span>", unsafe_allow_html=True)
-
-    st.divider()
-
-    # Sample questions
-    st.markdown("<div style='font-size:0.75rem; color:#7a7565; letter-spacing:1px; text-transform:uppercase; margin-bottom:0.5rem;'>Try Asking</div>", unsafe_allow_html=True)
-    sample_questions = [
-        "What are the elements of a valid contract?",
-        "What is anticipatory breach?",
-        "When does force majeure apply?",
-        "What is an NDA and how long does it last?",
-        "What remedies exist for contract breach?",
-    ]
-    for sq in sample_questions:
-        if st.button(sq, key=f"sample_{sq[:20]}", use_container_width=True):
-            st.session_state.pending_question = sq
-
-    st.divider()
-
-    # New conversation
-    if st.button("🗑️ New Conversation", use_container_width=True):
-        st.session_state.messages      = []
-        st.session_state.thread_id     = str(uuid.uuid4())[:8]
-        st.session_state.total_queries = 0
-        st.session_state.faith_scores  = []
-        st.session_state.pop("pending_question", None)
-        st.rerun()
-
-# ─────────────────────────────────────────────────────────
-# MAIN AREA
-# ─────────────────────────────────────────────────────────
-st.markdown("<div class='main-title'>⚖️ Document Intelligence Assistant</div>", unsafe_allow_html=True)
-st.markdown(
-    "<div class='sub-caption'>Legal contract analysis · Clause explanation · Document Q&A · Powered by LangGraph + ChromaDB</div>",
-    unsafe_allow_html=True
-)
-
-# Agent load
-with st.spinner("Loading knowledge base and agent…"):
-    try:
-        agent_app, embedder, collection = load_agent_cached()
-        agent_loaded = True
-        load_error   = None
-    except Exception as e:
-        agent_loaded = False
-        load_error   = str(e)
-        logger.error(f"Agent load failed: {load_error}")
-
-if not agent_loaded:
-    st.error(f"⚠️ Failed to load agent: {load_error}")
-    st.info("Make sure your GROQ_API_KEY is set in your .env file and all packages are installed.")
-    st.stop()
-
-# ── Display chat history ───────────────────────────────
-for msg in st.session_state.messages:
-    role = msg["role"]
-    with st.chat_message(role, avatar="👤" if role == "user" else "⚖️"):
-        st.markdown(msg["content"])
-        if role == "assistant" and "meta" in msg:
-            meta      = msg["meta"]
-            faith     = meta.get("faithfulness", 0.0)
-            sources   = meta.get("sources", [])
-            route     = meta.get("route", "")
-            bar_color = "#4caf84" if faith >= 0.7 else "#c9a84c" if faith >= 0.4 else "#c95050"
-            st.markdown(f"""
-            <div style='margin-top:0.6rem;'>
-                <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>
-                    <span style='font-size:0.72rem; color:#7a7565;'>Faithfulness</span>
-                    <div class='faith-bar-bg' style='width:80px; display:inline-block;'>
-                        <div class='faith-bar-fill' style='width:{int(faith*80)}px; background:{bar_color};'></div>
-                    </div>
-                    <span style='font-size:0.72rem; color:{bar_color};'>{faith:.2f}</span>
-                    <span class='route-badge'>{route.upper()}</span>
-                </div>
-                <div style='margin-top:4px;'>
-                    {''.join(f"<span class='source-tag'>{s}</span>" for s in sources)}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-# ── Pending question from sidebar ──────────────────────
-pending = st.session_state.pop("pending_question", None)
-
-# ── Chat input ─────────────────────────────────────────
-prompt = st.chat_input("Ask about contracts, clauses, legal documents…") or pending
-
-if prompt:
-    prompt = sanitize_input(prompt)
-
-    if not prompt:
-        st.warning("Input was empty or too short after sanitization.")
-    else:
-        with st.chat_message("user", avatar="👤"):
-            st.markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        with st.chat_message("assistant", avatar="⚖️"):
-            status_placeholder = st.empty()
-            try:
-                status_placeholder.info("🔄 Analyzing question...")
-                config = {"configurable": {"thread_id": st.session_state.thread_id}}
-                result = agent_app.invoke({"question": prompt}, config=config)
-
-                answer  = result.get("answer", "Sorry, I could not generate an answer.")
-                faith   = result.get("faithfulness", 0.0)
-                sources = result.get("sources", [])
-                route   = result.get("route", "retrieve")
-
-                status_placeholder.empty()
-                st.markdown(answer)
-
-                bar_color = "#4caf84" if faith >= 0.7 else "#c9a84c" if faith >= 0.4 else "#c95050"
-                st.markdown(f"""
-                <div style='margin-top:0.6rem;'>
-                    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>
-                        <span style='font-size:0.72rem; color:#7a7565;'>Faithfulness</span>
-                        <div class='faith-bar-bg' style='width:80px; display:inline-block;'>
-                            <div class='faith-bar-fill' style='width:{int(faith*80)}px; background:{bar_color};'></div>
-                        </div>
-                        <span style='font-size:0.72rem; color:{bar_color};'>{faith:.2f}</span>
-                        <span class='route-badge'>{route.upper()}</span>
-                    </div>
-                    <div style='margin-top:4px;'>
-                        {''.join(f"<span class='source-tag'>{s}</span>" for s in sources)}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer,
-                    "meta": {"faithfulness": faith, "sources": sources, "route": route}
-                })
-                st.session_state.total_queries += 1
-                st.session_state.faith_scores.append(faith)
-
-            except Exception as e:
-                status_placeholder.empty()
-                err_msg = f"An error occurred: {str(e)}"
-                logger.error(err_msg)
-                st.error(err_msg)
-                st.session_state.messages.append({"role": "assistant", "content": err_msg})
-
-        st.rerun()
-
-# ── Empty state ────────────────────────────────────────
-if not st.session_state.messages:
-    st.markdown("""
-    <div style='text-align:center; padding: 3rem 1rem; color:#4a4535;'>
-        <div style='font-size:3rem; margin-bottom:1rem;'>⚖️</div>
-        <div style='font-family: Playfair Display, serif; font-size:1.2rem; color:#7a7565; margin-bottom:0.5rem;'>
-            Ask anything about legal contracts and documents
-        </div>
-        <div style='font-size:0.85rem; color:#3a3530;'>
-            Try a sample question from the sidebar, or type your own below.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+"""

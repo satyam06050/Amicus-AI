@@ -7,6 +7,13 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from documents import DOCUMENTS
+from document_loader import get_uploaded_documents, add_documents_to_collection
+from config import (
+    LLM_MODEL, LLM_TEMPERATURE, EMBEDDING_MODEL, CHROMA_DB_PATH,
+    CHROMA_COLLECTION_NAME, CHROMA_PERSISTENCE, RETRIEVAL_TOP_K,
+    FAITHFULNESS_THRESHOLD, MAX_EVAL_RETRIES, MAX_MESSAGES_WINDOW,
+    MAX_CONTEXT_LENGTH, WEB_SEARCH_TOP_K, UPLOADS_DIR
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +37,9 @@ class CapstoneState(TypedDict):
 # ─────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────
-FAITHFULNESS_THRESHOLD = 0.7
-MAX_EVAL_RETRIES       = 2
+# Loaded from config.py above
+# FAITHFULNESS_THRESHOLD = 0.7
+# MAX_EVAL_RETRIES = 2
 
 # ─────────────────────────────────────────────────────────
 # NODE FUNCTIONS (extracted from monolithic load_agent)
@@ -43,8 +51,8 @@ def create_memory_node(llm, embedder, collection):
         msgs     = state.get("messages", [])
         question = state["question"]
         msgs     = msgs + [{"role": "user", "content": question}]
-        if len(msgs) > 6:
-            msgs = msgs[-6:]
+        if len(msgs) > MAX_MESSAGES_WINDOW:
+            msgs = msgs[-MAX_MESSAGES_WINDOW:]
         # Extract and persist user name if introduced
         updates: dict = {"messages": msgs}
         lower = question.lower()
@@ -91,7 +99,7 @@ def create_retrieval_node(embedder, collection):
     """Create and return the retrieval node function."""
     def retrieval_node(state: CapstoneState) -> dict:
         q_emb   = embedder.encode([state["question"]]).tolist()
-        results = collection.query(query_embeddings=q_emb, n_results=3)
+        results = collection.query(query_embeddings=q_emb, n_results=RETRIEVAL_TOP_K)
         chunks  = results["documents"][0]
         topics  = [m["topic"] for m in results["metadatas"][0]]
         context = "\n\n---\n\n".join(
@@ -113,7 +121,7 @@ def create_tool_node(llm):
         try:
             from duckduckgo_search import DDGS
             with DDGS() as ddgs:
-                results = list(ddgs.text(question, max_results=3))
+                results = list(ddgs.text(question, max_results=WEB_SEARCH_TOP_K))
             if results:
                 tool_result = "\n".join(
                     f"{r['title']}: {r['body'][:200]}" for r in results
@@ -173,7 +181,7 @@ def create_eval_node(llm):
     """Create and return the evaluation node function."""
     def eval_node(state: CapstoneState) -> dict:
         answer  = state.get("answer", "")
-        context = state.get("retrieved", "")[:500]
+        context = state.get("retrieved", "")[:MAX_CONTEXT_LENGTH]
         retries = state.get("eval_retries", 0)
 
         if not context:
@@ -188,10 +196,29 @@ Answer: {answer[:300]}"""
 
         result = llm.invoke(prompt).content.strip()
         try:
-            score = float(result.split()[0].replace(",", "."))
-            score = max(0.0, min(1.0, score))
+            # Robust parsing: handle various formats
+            # Extract first number-like substring
+            import re
+            matches = re.findall(r'0\.\d+|\d+/10|\d+%|[\d]+', result)
+            if matches:
+                score_str = matches[0]
+                if '/' in score_str:
+                    # Handle "X/10" format
+                    score = float(score_str.split('/')[0]) / 10.0
+                elif '%' in result:
+                    # Handle percentage format
+                    score = float(score_str) / 100.0
+                else:
+                    # Handle decimal format
+                    score = float(score_str)
+                    if score > 1.0:
+                        score = score / 10.0  # Assume out of 10 if > 1
+                score = max(0.0, min(1.0, score))
+            else:
+                logger.warning(f"Could not parse faithfulness from: {result}")
+                score = 0.5
         except Exception as e:
-            logger.warning(f"Failed to parse faithfulness score: {str(e)}")
+            logger.warning(f"Failed to parse faithfulness score '{result}': {str(e)}")
             score = 0.5
 
         return {"faithfulness": score, "eval_retries": retries + 1}
@@ -228,26 +255,48 @@ def eval_decision(state: CapstoneState) -> str:
 # AGENT LOADER
 # ─────────────────────────────────────────────────────────
 
-def load_agent():
+def load_agent(progress_callback=None):
     """
     Load and build the LangGraph agent.
     
+    Args:
+        progress_callback: Optional callback function that takes (step_name, message, status) tuples
+    
     Returns:
-        tuple: (agent_app, embedder, collection)
+        tuple: (agent_app, embedder, collection, kb_stats)
     """
-    llm      = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    def progress(step, message, status="info"):
+        """Send progress update."""
+        if progress_callback:
+            progress_callback({"step": step, "message": message, "status": status})
+        logger.info(f"[AGENT] {step}: {message}")
+    
+    progress("INIT", "Starting agent load...")
+    
+    progress("LLM", "Initializing LLM...")
+    llm      = ChatGroq(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
+    
+    progress("EMBEDDING", "Loading embedding model...")
+    embedder = SentenceTransformer(EMBEDDING_MODEL)
+    progress("EMBEDDING", "Embedding model loaded ✓")
 
-    # Build ChromaDB
-    client = chromadb.Client()
+    # Build persistent ChromaDB
+    progress("CHROMA", "Initializing ChromaDB...")
+    if CHROMA_PERSISTENCE:
+        client = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+    else:
+        client = chromadb.Client()
+    
     try:
-        client.delete_collection("capstone_kb")
+        client.delete_collection(CHROMA_COLLECTION_NAME)
     except Exception as e:
         # Collection doesn't exist yet; safe to proceed
         logger.debug(f"Could not delete existing collection: {str(e)}")
 
-    collection = client.create_collection("capstone_kb")
+    collection = client.create_collection(CHROMA_COLLECTION_NAME)
+    progress("CHROMA", "ChromaDB collection created ✓")
 
+    progress("KB_BASE", f"Adding {len(DOCUMENTS)} base documents...")
     texts      = [d["text"]  for d in DOCUMENTS]
     ids        = [d["id"]    for d in DOCUMENTS]
     embeddings = embedder.encode(texts).tolist()
@@ -258,8 +307,35 @@ def load_agent():
         ids        = ids,
         metadatas  = [{"topic": d["topic"]} for d in DOCUMENTS]
     )
+    progress("KB_BASE", f"Base documents added ✓ ({len(DOCUMENTS)} docs)")
+
+    # Load and add uploaded documents
+    kb_stats = None
+    progress("KB_UPLOAD", "Checking for uploaded documents...")
+    uploaded_files = get_uploaded_documents(str(UPLOADS_DIR))
+    if uploaded_files:
+        progress("KB_UPLOAD", f"Found {len(uploaded_files)} document(s)")
+        progress("KB_UPLOAD", "🔄 Adding to knowledge base (this may take a moment)...", status="warning")
+        try:
+            stats = add_documents_to_collection(collection, embedder, uploaded_files, doc_source="uploaded")
+            kb_stats = stats
+            progress("KB_UPLOAD", 
+                    f"✅ KB addition complete! Files: {stats['files_processed']}, "
+                    f"Chunks: {stats['chunks_added']}", 
+                    status="success")
+            if stats.get("errors"):
+                error_msg = " | ".join(stats['errors'][:3])
+                if len(stats['errors']) > 3:
+                    error_msg += f" (+{len(stats['errors'])-3} more)"
+                progress("KB_UPLOAD", f"⚠️ Warnings: {error_msg}", status="warning")
+        except Exception as e:
+            progress("KB_UPLOAD", f"❌ Error: {str(e)[:100]}", status="error")
+            logger.error(f"[AGENT] Error adding documents to knowledge base: {str(e)}", exc_info=True)
+    else:
+        progress("KB_UPLOAD", "No uploaded documents found ✓")
 
     # Instantiate all node functions
+    progress("NODES", "Creating node functions...")
     memory_node    = create_memory_node(llm, embedder, collection)
     router_node    = create_router_node(llm)
     retrieval_node = create_retrieval_node(embedder, collection)
@@ -268,8 +344,10 @@ def load_agent():
     answer_node    = create_answer_node(llm)
     eval_node      = create_eval_node(llm)
     save_node      = create_save_node()
+    progress("NODES", "Node functions created ✓")
 
     # Build graph
+    progress("GRAPH", "Building graph structure...")
     graph = StateGraph(CapstoneState)
 
     graph.add_node("memory",   memory_node)
@@ -300,7 +378,9 @@ def load_agent():
     )
     graph.add_edge("save", END)
 
+    progress("COMPILE", "Compiling agent...")
     checkpointer = MemorySaver()
     agent_app    = graph.compile(checkpointer=checkpointer)
+    progress("READY", "✅ Agent loaded and ready!", status="success")
 
-    return agent_app, embedder, collection
+    return agent_app, embedder, collection, kb_stats

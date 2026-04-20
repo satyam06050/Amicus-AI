@@ -1,5 +1,6 @@
 import re
 import logging
+from config import MAX_INPUT_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -7,17 +8,20 @@ logger = logging.getLogger(__name__)
 # INPUT SANITIZATION (PROMPT INJECTION PREVENTION)
 # ─────────────────────────────────────────────────────────
 
-def sanitize_input(user_input: str, max_length: int = 500) -> str:
+def sanitize_input(user_input: str, max_length: int = None) -> str:
     """
     Sanitize user input to prevent prompt injection attacks.
     
     Args:
         user_input: Raw user input string
-        max_length: Maximum allowed length (default 500 chars)
+        max_length: Maximum allowed length (default from config)
     
     Returns:
         Sanitized input string
     """
+    if max_length is None:
+        max_length = MAX_INPUT_LENGTH
+    
     if not user_input:
         return ""
     
